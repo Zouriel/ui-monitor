@@ -19,8 +19,7 @@ namespace ui_monitor
         public BitmapSource? Snapshot { get; private set; }
         public BitmapSource? Snapshot2 { get; private set; } 
         private Window? _snapshotPreviewWindow;
-        private Window warningwindow;
-
+        private AlarmOverlay? _alarmOverlay;
         private DispatcherTimer? _monitorTimer;
         private byte[]? _lastSnapshotData;
 
@@ -54,6 +53,21 @@ namespace ui_monitor
 
             Content = border;
         }
+        private bool IsSignificantlyDifferent(byte[] current, byte[] previous, int threshold = 50)
+        {
+            if (current.Length != previous.Length) return true;
+
+            int diff = 0;
+            for (int i = 0; i < current.Length; i++)
+            {
+                if (Math.Abs(current[i] - previous[i]) > 16) // Ignore tiny color jitters
+                    diff++;
+
+                if (diff > threshold)
+                    return true;
+            }
+            return false;
+        }
         public void WarningSetter()
         {
 
@@ -66,7 +80,23 @@ namespace ui_monitor
             this.CaptureSnapshot("this");
 
             StartMonitoringZoneChanges();
-            MonitorZoneChanged += () => MessageBox.Show("Significant change detected!");
+            MonitorZoneChanged += () =>
+            {
+                if (_alarmOverlay == null)
+                {
+                    var offset = 4; // 4px outside the monitor zone
+                    var bounds = new Rect(
+                        this.Left - offset,
+                        this.Top - offset,
+                        this.Width + offset * 2,
+                        this.Height + offset * 2
+                    );
+                    _alarmOverlay = new AlarmOverlay(bounds);
+                    _alarmOverlay.Closed += (_, __) => _alarmOverlay = null;
+                    _alarmOverlay.Show();
+                }
+            };
+
         }
 
         private void CaptureSnapshot(string from)
@@ -169,6 +199,11 @@ namespace ui_monitor
         public void CloseSelection()
         {
             this.StopMonitoringZoneChanges();
+            if (_alarmOverlay != null)
+            {
+                _alarmOverlay.Close();
+                _alarmOverlay = null;
+            }
             this.Close();
         }
 
@@ -285,7 +320,7 @@ namespace ui_monitor
             for (int i = 0; i < pixels.Length; i++)
                 pixels[i] = (byte)((pixels[i] / 16) * 16);
 
-            if (_lastSnapshotData != null && !pixels.SequenceEqual(_lastSnapshotData))
+            if (_lastSnapshotData != null && IsSignificantlyDifferent(pixels, _lastSnapshotData))
             {
                 OnMonitorZoneChanged();
             }
@@ -298,13 +333,40 @@ namespace ui_monitor
             MonitorZoneChanged?.Invoke();
         }
 
-        private void GlassBorder_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        private async void GlassBorder_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
+            this.StopMonitoringZoneChanges();
 
-                this.StopMonitoringZoneChanges();
-                this.Snapshot = null;
-                this.CaptureSnapshot("this");
-                this.StartMonitoringZoneChanges();
+            if (_alarmOverlay != null)
+            {
+                _alarmOverlay.StopGlow();
+                _alarmOverlay.Close();
+                _alarmOverlay = null;
+            }
+
+            this.Snapshot = null;
+
+            // Wait a short time to allow any overlays or visual artifacts to disappear from screen
+            await Task.Delay(300);
+
+            this.CaptureSnapshot("this");
+
+            StartMonitoringZoneChanges();
+        }
+        public void TriggerAlarm()
+        {
+            if (_alarmOverlay != null) return; // already showing
+
+            var rect = new Rect(this.Left, this.Top, this.Width, this.Height);
+            _alarmOverlay = new AlarmOverlay(rect);
+            _alarmOverlay.Owner = this;
+            _alarmOverlay.Show();
+        }
+
+        public void StopAlarm()
+        {
+            _alarmOverlay?.StopGlow();
+            _alarmOverlay = null;
         }
     }
 }
