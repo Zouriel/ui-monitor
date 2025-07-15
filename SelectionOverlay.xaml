@@ -1,0 +1,16 @@
+﻿<Window x:Class="ui_monitor.SelectionOverlay"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SelectionOverlay"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        WindowState="Maximized"
+        Topmost="True"
+        ShowInTaskbar="False"
+        MouseLeftButtonDown="Window_MouseLeftButtonDown"
+        MouseMove="Window_MouseMove"
+        MouseLeftButtonUp="Window_MouseLeftButtonUp">
+
+    <Canvas x:Name="OverlayCanvas" Background="#01000000" />
+</Window>
