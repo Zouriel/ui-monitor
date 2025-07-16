@@ -21,7 +21,7 @@ namespace ui_monitor
         private Window? _snapshotPreviewWindow;
         private AlarmOverlay? _alarmOverlay;
         private DispatcherTimer? _monitorTimer;
-        private byte[]? _lastSnapshotData;
+        private byte[]? _baselineSnapshotData;
 
         // Event or callback for significant changes
         public event Action? MonitorZoneChanged;
@@ -53,14 +53,14 @@ namespace ui_monitor
 
             Content = border;
         }
-        private bool IsSignificantlyDifferent(byte[] current, byte[] previous, int threshold = 50)
+        private bool IsSignificantlyDifferent(byte[] current, byte[] previous, int threshold = 10)
         {
             if (current.Length != previous.Length) return true;
 
             int diff = 0;
             for (int i = 0; i < current.Length; i++)
             {
-                if (Math.Abs(current[i] - previous[i]) > 16) // Ignore tiny color jitters
+                if (Math.Abs(current[i] - previous[i]) > 2) // Ignore tiny color jitters
                     diff++;
 
                 if (diff > threshold)
@@ -76,15 +76,28 @@ namespace ui_monitor
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            MainWindow.RegisterMonitor(this); 
-            this.CaptureSnapshot("this");
+            MainWindow.RegisterMonitor(this);
 
-            StartMonitoringZoneChanges();
+            // Delay snapshot + monitoring to avoid false detections
+            var delayTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(400)
+            };
+
+            delayTimer.Tick += (s, args) =>
+            {
+                delayTimer.Stop();
+
+                this.CaptureSnapshot("this");
+                StartMonitoringZoneChanges();
+            };
+            delayTimer.Start();
+
             MonitorZoneChanged += () =>
             {
                 if (_alarmOverlay == null)
                 {
-                    var offset = 4; // 4px outside the monitor zone
+                    var offset = 2;
                     var bounds = new Rect(
                         this.Left - offset,
                         this.Top - offset,
@@ -96,8 +109,8 @@ namespace ui_monitor
                     _alarmOverlay.Show();
                 }
             };
-
         }
+
 
         private void CaptureSnapshot(string from)
         {
@@ -111,7 +124,7 @@ namespace ui_monitor
 
             // Hide self so we don’t capture our glow or overlay
             this.Visibility = Visibility.Hidden;
-            if(_snapshotPreviewWindow != null) this._snapshotPreviewWindow.Hide();
+            if (_snapshotPreviewWindow != null) _snapshotPreviewWindow.Hide();
             System.Threading.Thread.Sleep(100); // wait 1 frame
 
             using var bmp = new System.Drawing.Bitmap(width, height);
@@ -130,23 +143,32 @@ namespace ui_monitor
                     BitmapSizeOptions.FromEmptyOptions());
 
                 bitmapSource.Freeze();
-                if (from == "monitor") Snapshot2 = bitmapSource;
-                if (from == "this") Snapshot = bitmapSource;
+
+                if (from == "monitor")
+                {
+                    Snapshot2 = bitmapSource;
+                }
+                else if (from == "this")
+                {
+                    Snapshot = bitmapSource;
+
+                    // 🧠 Also store the quantized and downscaled baseline pixel data
+                    var scaled = new TransformedBitmap(bitmapSource, new ScaleTransform(0.1, 0.1));
+                    int stride = (scaled.PixelWidth * scaled.Format.BitsPerPixel + 7) / 8;
+                    _baselineSnapshotData = new byte[scaled.PixelHeight * stride];
+                    scaled.CopyPixels(_baselineSnapshotData, stride, 0);
+
+                    for (int i = 0; i < _baselineSnapshotData.Length; i++)
+                        _baselineSnapshotData[i] = (byte)((_baselineSnapshotData[i] / 16) * 16);
+                }
             }
             finally
             {
                 DeleteObject(hBitmap);
-                this.Visibility = Visibility.Visible; // bring it back
-                if(_snapshotPreviewWindow != null) this._snapshotPreviewWindow.Hide();
-
+                this.Visibility = Visibility.Visible;
+                if (_snapshotPreviewWindow != null) _snapshotPreviewWindow.Hide();
             }
         }
-
-        private void boarderGlower()
-        {
-
-        }
-
 
         private void Window_MouseDown(object sender, MouseButtonEventArgs e)
         {
@@ -201,6 +223,7 @@ namespace ui_monitor
             this.StopMonitoringZoneChanges();
             if (_alarmOverlay != null)
             {
+                _alarmOverlay.StopGlow();
                 _alarmOverlay.Close();
                 _alarmOverlay = null;
             }
@@ -307,25 +330,23 @@ namespace ui_monitor
         private void MonitorTimer_Tick(object? sender, EventArgs e)
         {
             CaptureSnapshot("monitor");
-            if (Snapshot == null)
+            if (Snapshot2 == null || _baselineSnapshotData == null)
                 return;
 
-            // Downscale for performance and noise reduction
             var scaled = new TransformedBitmap(Snapshot2, new ScaleTransform(0.1, 0.1));
             int stride = (scaled.PixelWidth * scaled.Format.BitsPerPixel + 7) / 8;
-            byte[] pixels = new byte[scaled.PixelHeight * stride];
-            scaled.CopyPixels(pixels, stride, 0);
+            byte[] currentPixels = new byte[scaled.PixelHeight * stride];
+            scaled.CopyPixels(currentPixels, stride, 0);
 
-            // Quantize colors to ignore minor changes (e.g., round to nearest 16)
-            for (int i = 0; i < pixels.Length; i++)
-                pixels[i] = (byte)((pixels[i] / 16) * 16);
+            for (int i = 0; i < currentPixels.Length; i++)
+                currentPixels[i] = (byte)((currentPixels[i] / 16) * 16);
 
-            if (_lastSnapshotData != null && IsSignificantlyDifferent(pixels, _lastSnapshotData))
+            if (IsSignificantlyDifferent(currentPixels, _baselineSnapshotData))
             {
                 OnMonitorZoneChanged();
             }
 
-            _lastSnapshotData = pixels;
+            
         }
 
         protected virtual void OnMonitorZoneChanged()
